@@ -29,7 +29,8 @@ the memo of [owasp-mstg/Document/0x05b-Basic-Security_Testing.md](https://github
     - マニフェストも編集が必要
     - これらの変更を反映させるため、apktool でアプリのデコンパイル、リコンパイルを行う。
     - これらの手順を自動化した、Android-CertKiller という Python スクリプトがある。
-        - APK を抽出、デコンパイルしてデバッグ可能にし、ユーザー証明書を許可する新しいネットワークセキュリティ設定を追加し、新しいAPKを作成、署名し、SSLバイパスで新しいAPKをインストールする。
+        - APK を抽出、デコンパイルしてデバッグ可能にし、ユーザー証明書を許可する
+        - 新しいネットワークセキュリティ設定を追加し、新しいAPKを作成、署名し、SSLバイパスで新しいAPKをインストールする。
         - 既知のバグにより、最後のステップであるアプリのインストールが失敗する可能性がある
 - [この Magisk Module](https://github.com/NVISO-BE/MagiskTrustUserCerts) を使って、ユーザーがインストールした CA を system trusted CAs に自動で追加することができる。
 - /system を mount して手動で行う手順も紹介。ただ Magisk で root 化する予定なので上記のモジュールを使う予定。
@@ -156,3 +157,122 @@ Burp や OWASP ZAP では non-HTTP traffic には対応していないが、プ�
 - iptables を設定するか、ettercap を使う必要がある。
 - 以降は Firebase Cloud Messaging のキャプチャを取る作業だが、自分の作業範囲か分からないことと上述の tcpdump が上手くいっていない問題もあるので一旦保留。
 
+#### End-to-End Encryption for Push Notifications
+
+- Drozer は、Android のアプリのセキュリティ脆弱性をセキュリティ評価のフレームワーク。
+    - Mac では、依存関係の問題から少しインストールが難しい。El Capitan 以降の Mac OS では OpenSSL がインストールされていないので、まずこれを手動でインストールする。
+    - また、Drozer は古いバージョンの Python ライブラリに依存しているので、virtualenv を使ってください。
+    - pyOpenSSL バージョンの Drozer のソースにタイプミスがあると、正常にコンパイルできなくなるので、コンパイルする前にソースを修正する必要がある。
+    - 詳細な手順は載っているので問題ない・・・と思っていたら easy_install でエラーになった。
+        - Missing parentheses in call to 'print'. というエラーが出ていたが、これは2系の Python スクリプトを3系の環境で動かした時によく出るやつ。公式のページを見ると、Prerequisites に Python2.7 と書いてあった。
+        - Mac ではデフォルトで 2.7 が入っているが、自分で 3 系をインストールしてデフォルトに設定している人は virtualenv drozer のコマンドを virtualenv drozer --python=/usr/bin/python2.7 とする必要がある。
+    - Drozer agent をダウンロードし、adb でデバイスにインストールする。
+    - インストールしたアプリをデバイス上で開き、画面下部にある[OFF]ボタンをクリックして Embedded Server を起動する。
+    - サーバーはデフォルトでポート 31415 で待機しているので、adb でポートフォワードして接続する。
+```
+$ adb forward tcp:31415 tcp:31415
+$ drozer console connect
+```
+
+#### Basic Drozer Commands:
+
+基本的な使い方は以下のポストが参考になる。
+[How To Test Android Application Security Using Drozer?](https://medium.com/@ashrafrizvi3006/how-to-test-android-application-security-using-drozer-edc002c5dcac)
+
+#### Using Modules: / Finding Modules: / Installing Modules:
+
+- Drozer は追加モジュールをダウンロードできる。公式のモジュールであれば module コマンドで検索が可能。
+- 新しくインストールしたモジュールは動的にロードされるのでインストール後にすぐに使える。
+
+#### Potential Obstacles
+
+- アプリケーションはしばしば rooted detect や証明書の検証などを行うセキュリテイ機能が実装されている。
+- 診断にあたっては、これらの機能があるものと、除去したものの両方を入手することが望ましい。
+- すべてのセキュリティ対策が有効になっているアプリケーションでは、ブラックボックス評価を実行することになる。次のセクションではこれらのセキュリティ対策をバイパスする。
+- Certificate Pinning
+    - アプリが証明書のピン留めを実装している場合、プロキシによって提供された X.509 証明書は拒否され、アプリはプロキシを介した要求を拒否する。
+    - デバイスで利用可能なフレームワークに応じて、ブラックボックステストのために証明書の固定を回避する方法がある。
+        - Frida: [Objection](https://github.com/sensepost/objection)
+        - Xposed: TrustMeAlready, SSLUnpinning
+        - Cydia Substrate: Android-SSL-TrustKiller
+    - ほとんどのアプリではこのピン留めは一瞬で回避できるが、これらのツールでカバーされているAPI機能を使用している場合に限られる。
+    - アプリがカスタムフレームワークまたはライブラリを使用してSSL固定を実装している場合は、手動でパッチを適用して無効化する必要がある
+    - 静的解析で回避することもできる。
+        - まずはアプリをデコンパイルして、smali の中から検索する。  
+        grep -ri "sha256\|sha1" ./smali
+        - 見つけたハッシュ値をプロキシの CA のハッシュで書き換え。ハッシュにドメイン名が付随している場合は、元のドメインが固定されないようにドメイン名を存在しないドメインに変更する。これは難読化されたOkHTTP実装ではうまく機能する。
+        - 次に、証明書ファイル：./assets -type f \（-iname \ *。cer -o -iname \ *。crt \）を見つける。これらのファイルをプロキシの証明書と置き換える。
+        - アプリケーションがネットワーク通信の実装にネイティブライブラリを使用している場合は、さらに解析が必要。
+        - これらが完了したら、アプリをリコンパイルしてデバイスにインストールする。
+    - Bypass Custom Certificate Pinning Dynamically
+        - 動的解析だと改変検知をバイパスする必要がないので便利
+        - 難読化されている場合はフックする API を見つけるのが困難なので、使用されているライブラリを識別する文字列とライセンスファイルを検索するのがグッドパターン。  
+        ライブラリを特定したら、元のソースコードを調べて動的計測に適したメソッドを探す。
+        - Frida で各メソッドをフックして引数を出力するとドメイン名と証明書ハッシュが出てくるので、それを改ざんする。
+- Root Detection
+    - [Testing Anti-Reversing Defenses on Android](https://github.com/OWASP/owasp-mstg/blob/master/Document/0x05j-Testing-Resiliency-Against-Reverse-Engineering.md) を参照。
+        - 非常に長いドキュメントだが、いくつかの rooted 検知回避を試すことで検知方法はある程度割れるだろう。
+
+---
+
+[Hacking Android apps with FRIDA II - Crackme](https://www.codemetrix.io/hacking-android-apps-with-frida-2/) を教科書に Frida のフックテスト。  
+[owasp-mstg/Crackmes/](https://github.com/OWASP/owasp-mstg/tree/master/Crackmes) の level 1 を定常診断のツールでデコンパイルし、JD-GUI でパスワードの正解を生成しているメソッドを発見。  
+```
+package sg.vantagepoint.a;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+
+public class a
+{
+  public static byte[] a(byte[] paramArrayOfByte1, byte[] paramArrayOfByte2)
+  {
+    paramArrayOfByte1 = new SecretKeySpec(paramArrayOfByte1, "AES/ECB/PKCS7Padding");
+    Cipher localCipher = Cipher.getInstance("AES");
+    localCipher.init(2, paramArrayOfByte1);
+    return localCipher.doFinal(paramArrayOfByte2);
+  }
+}
+```
+rooted 検知は上手くバイパスできなかったので Magisk Hide でバイパスし、 Javascript で上記の関数をフックして生成した鍵を吐き出す。
+```
+setImmediate(function () { //prevent timeout
+  console.log("[*] Starting script");
+
+  Java.perform(function () {
+
+    aaClass = Java.use("sg.vantagepoint.a.a");
+    aaClass.a.implementation = function (arg1, arg2) {
+      retval = this.a(arg1, arg2);
+      password = ''
+      for (i = 0; i < retval.length; i++) {
+        password += String.fromCharCode(retval[i]);
+      }
+
+      console.log("[*] Decrypted: " + password);
+      return retval;
+    }
+    console.log("[*] sg.vantagepoint.a.a.a modified");
+  });
+});
+```
+アプリを正常に動作させるため、フックした関数でもちゃんと return retval; を実装している。  
+デバイス上でアプリを起動したあとに、以下のコマンドラインでインジェクション。  
+```
+frida -U -l uncrackable1.js owasp.mstg.uncrackable1
+```
+そのあとにアプリの VERIFY ボタンをタップし、照合メソッドを実行する。  
+```
+[LGE Nexus 5X::owasp.mstg.uncrackable1]-> [*] Starting script
+[*] sg.vantagepoint.a.a.a modified
+[*] Decrypted: I want to believe
+```
+
+---
+
+[このページ](https://qiita.com/ymmtyuhei/items/b68e35a21f7c1252dca8)を参考に以下のコマンドで tcpdump の結果を取得できた。
+```
+tcpdump -s 0 -i wlan0 -v -w /sdcard/dump.pcap
+```
+
+このファイルを Wireshark で読み込めることも確認。  
